@@ -1,0 +1,78 @@
+FROM ubuntu:20.04
+
+# Для slim-версии можно передать аргумент: --build-arg ADDITIONAL_APT_GET_OPTS=--no-install-recommends
+ARG ADDITIONAL_APT_GET_OPTS=""
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y $ADDITIONAL_APT_GET_OPTS \
+      dbus-x11 \
+      gosu \
+      ibus \
+      ibus-gtk \
+      ibus-gtk3 \
+      im-config \
+      language-pack-ru \
+      lxde \
+      sudo \
+      supervisor \
+      xorg \
+      xorgxrdp \
+      xrdp \
+    && apt-get clean \
+    && rm -rf /var/cache/apt/archives/* \
+    && rm -rf /var/lib/apt/lists/*
+
+# Настройка часового пояса и локали для России
+RUN cp /usr/share/zoneinfo/Europe/Moscow /etc/localtime \
+    && echo 'Europe/Moscow' > /etc/timezone
+RUN locale-gen ru_RU.UTF-8 \
+    && echo 'LC_ALL=ru_RU.UTF-8' > /etc/default/locale \
+    && echo 'LANG=ru_RU.UTF-8' >> /etc/default/locale
+ENV LANG=ru_RU.UTF-8 \
+    LANGUAGE=ru_RU:ru \
+    LC_ALL=ru_RU.UTF-8
+
+# Задаём значения по умолчанию
+ENV DEFAULT_USER=developer \
+    DEFAULT_PASSWD=xrdppasswd
+
+# Разрешаем пользователям использовать sudo без пароля
+RUN echo "ALL ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/ALL
+
+# Изменяем права, чтобы обычный пользователь мог создавать пользователей и группы
+RUN chmod u+s /usr/sbin/useradd \
+    && chmod u+s /usr/sbin/groupadd
+
+# Открываем RDP-порт
+EXPOSE 3389
+
+RUN echo "startlxde" > /etc/skel/.xsession \
+    && install -o root -g xrdp -m 2775 -d /var/run/xrdp \
+    && install -o root -g xrdp -m 3777 -d /var/run/xrdp/sockdir \
+    && install -o root -g root -m 0755 -d /var/run/dbus \
+    && install -o root -g root -m 0644 /dev/null /etc/securetty \
+    && sed -i 's|.*pam_systemd.so|#&|g' /etc/pam.d/common-session \
+    && sed -i 's|\[Session\]|&\npolkit/command=|' /etc/xdg/lxsession/LXDE/desktop.conf \
+    && usermod -aG ssl-cert xrdp \
+    && ln -s /usr/share/lxde/wallpapers/lxde_blue.jpg /etc/alternatives/desktop-background
+
+# Настройка конфигурации supervisord для сервиса xrdp
+RUN { \
+      echo "[supervisord]"; \
+      echo "user=root"; \
+      echo "nodaemon=true"; \
+      echo "logfile=/var/log/supervisor/supervisord.log"; \
+      echo "childlogdir=/var/log/supervisor"; \
+      echo "[program:dbus]"; \
+      echo "command=/usr/bin/dbus-daemon --system --nofork --nopidfile"; \
+      echo "[program:xrdp-sesman]"; \
+      echo "command=/usr/sbin/xrdp-sesman --nodaemon"; \
+      echo "[program:xrdp]"; \
+      echo "command=/usr/sbin/xrdp --nodaemon"; \
+      echo "user=xrdp"; \
+    } > /etc/supervisor/xrdp.conf
+
+# Копируем скрипт запуска и делаем его исполняемым
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["docker-entrypoint.sh"]
